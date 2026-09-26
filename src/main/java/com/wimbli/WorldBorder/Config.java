@@ -75,6 +75,7 @@ public class Config
 			log("Border set. " + BorderDescription(world));
 		save(true);
 		DynMapFeatures.showBorder(world, border);
+		BlueMapPresence.showBorder(world, border);
 	}
 	public static void setBorder(String world, BorderData border)
 	{
@@ -135,6 +136,7 @@ public class Config
 		log("Removed border for world \"" + world + "\".");
 		save(true);
 		DynMapFeatures.removeBorder(world);
+		BlueMapPresence.removeBorder(world);
 	}
 
 	public static void removeAllBorders()
@@ -143,6 +145,7 @@ public class Config
 		log("Removed all borders for all worlds.");
 		save(true);
 		DynMapFeatures.removeAllBorders();
+		BlueMapPresence.removeAllBorders();
 	}
 
 	public static String BorderDescription(String world)
@@ -208,6 +211,7 @@ public class Config
 		log("Set default border shape to " + (ShapeName()) + ".");
 		save(true);
 		DynMapFeatures.showAllBorders();
+		BlueMapPresence.showAllBorders();
 	}
 
 	public static boolean ShapeRound()
@@ -634,6 +638,7 @@ public class Config
 			msg = "&cYou have reached the edge of this world.";
 			updateMessage(msg);
 			save(false);
+			BlueMapPresence.showAllBorders();
 			return;
 		}
 		// if loading older config which didn't support color codes in border message, make sure default red color code is added at start of it
@@ -701,6 +706,7 @@ public class Config
 
 		if (cfgVersion < currentCfgVersion)
 			save(false);
+		BlueMapPresence.showAllBorders();
 	}
 
 	public static void save(boolean logIt)

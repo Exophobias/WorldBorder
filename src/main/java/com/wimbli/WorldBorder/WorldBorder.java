@@ -36,6 +36,7 @@ public class WorldBorder extends JavaPlugin
 
 		// integrate with DynMap if it's available
 		DynMapFeatures.setup();
+		BlueMapPresence.install(this);
 
 		// Well I for one find this info useful, so...
 		Location spawn = getServer().getWorlds().get(0).getSpawnLocation();
@@ -46,9 +47,11 @@ public class WorldBorder extends JavaPlugin
 	public void onDisable()
 	{
 		DynMapFeatures.removeAllBorders();
+		BlueMapPresence.shutdown();
 		Config.StopBorderTimer();
 		Config.StoreFillTask();
 		Config.StopFillTask(true);
+		Config.StopTrimTask();
 	}
 
 	// for other plugins to hook into

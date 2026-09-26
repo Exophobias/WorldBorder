@@ -37,14 +37,16 @@ public class BorderCheckTask implements Runnable
 
 	// track players who are being handled (moved back inside the border) already; needed since Bukkit is sometimes sending teleport events with the old (now incorrect) location still indicated, which can lead to a loop when we then teleport them thinking they're outside the border, triggering event again, etc.
 	private static Set<String> handlingPlayers = Collections.synchronizedSet(new LinkedHashSet<String>());
+	private static final Set<String> unsafeSpawnWarnings = Collections.synchronizedSet(new LinkedHashSet<String>());
 
 	// set targetLoc only if not current player location; set returnLocationOnly to true to have new Location returned if they need to be moved to one, instead of directly handling it
 	public static Location checkPlayer(Player player, Location targetLoc, boolean returnLocationOnly, boolean notify)
 	{
 		if (player == null || !player.isOnline()) return null;
 
-		Location loc = (targetLoc == null) ? player.getLocation().clone() : targetLoc;
+		Location loc = targetLoc == null ? player.getLocation() : targetLoc;
 		if (loc == null) return null;
+		if (targetLoc == null) loc = loc.clone();
 
 		World world = loc.getWorld();
 		if (world == null) return null;
@@ -62,6 +64,11 @@ public class BorderCheckTask implements Runnable
 		handlingPlayers.add(player.getName().toLowerCase());
 
 		Location newLoc = newLocation(player, loc, border, notify);
+		if (newLoc == null)
+		{
+			handlingPlayers.remove(player.getName().toLowerCase());
+			return null;
+		}
 		boolean handlingVehicle = false;
 
 		/*
@@ -138,8 +145,8 @@ public class BorderCheckTask implements Runnable
 
 		Location newLoc = border.correctedPosition(loc, Config.ShapeRound(), player.isFlying());
 
-		// it's remotely possible (such as in the Nether) a suitable location isn't available, in which case...
-		if (newLoc == null)
+		// It's possible (such as in the Nether) that no safe spot exists at the corrected position.
+		if (!insideBorder(newLoc, loc.getWorld(), border, Config.ShapeRound()))
 		{
 			if (Config.Debug())
 				Config.logWarn("Target new location unviable, using spawn or killing player.");
@@ -148,7 +155,15 @@ public class BorderCheckTask implements Runnable
 				player.setHealth(0.0D);
 				return null;
 			}
-			newLoc = player.getWorld().getSpawnLocation();
+			World destinationWorld = loc.getWorld();
+			newLoc = safeSpawnFallback(destinationWorld, destinationWorld.getSpawnLocation(), border, Config.ShapeRound(), player.isFlying());
+			if (newLoc == null)
+			{
+				if (unsafeSpawnWarnings.add(destinationWorld.getName()))
+					Config.logWarn("No safe spawn fallback inside the border for world \"" + destinationWorld.getName() + "\"; leaving the player in place.");
+				return null;
+			}
+			unsafeSpawnWarnings.remove(destinationWorld.getName());
 		}
 
 		if (Config.Debug())
@@ -158,6 +173,29 @@ public class BorderCheckTask implements Runnable
 			player.sendMessage(Config.Message());
 
 		return newLoc;
+	}
+
+	// A world's spawn may be outside a newly configured border. Correct it through
+	// BorderData's safe-landing search and never return a destination outside the border.
+	static Location safeSpawnFallback(World world, Location spawn, BorderData border, boolean round, boolean flying)
+	{
+		if (world == null || spawn == null || spawn.getWorld() != world || !finitePosition(spawn))
+			return null;
+		Location corrected = border.insideBorder(spawn.getX(), spawn.getZ(), round)
+			? border.safeLandingAt(spawn, flying)
+			: border.correctedPosition(spawn, round, flying);
+		return insideBorder(corrected, world, border, round) ? corrected : null;
+	}
+
+	private static boolean insideBorder(Location location, World world, BorderData border, boolean round)
+	{
+		return location != null && location.getWorld() == world && finitePosition(location)
+			&& border.insideBorder(location.getX(), location.getZ(), round);
+	}
+
+	private static boolean finitePosition(Location location)
+	{
+		return Double.isFinite(location.getX()) && Double.isFinite(location.getY()) && Double.isFinite(location.getZ());
 	}
 
 	private static void setPassengerDelayed(final Entity vehicle, final Player player, final String playerName, long delay)

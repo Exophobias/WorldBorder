@@ -1,35 +1,60 @@
 plugins {
     id("java-library")
     id("maven-publish")
-    id("com.github.johnrengelman.shadow") version "7.1.2"
 }
 
 group = "com.wimbli.WorldBorder"
-version = "1.19"
+version = "1.19-patriam.1"
+val paperApiVersion = "26.3.build.26-alpha"
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(8))
+        languageVersion.set(JavaLanguageVersion.of(25))
     }
     withSourcesJar()
 }
 
 repositories {
     mavenCentral()
-    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
     maven("https://repo.mikeprimm.com/")
-    maven("https://papermc.io/repo/repository/maven-public/")
+    maven("https://repo.papermc.io/repository/maven-public/")
+    maven("https://repo.bluecolored.de/releases")
 }
 
 dependencies {
-    compileOnly(group = "org.spigotmc", name = "spigot-api", version = "1.14-R0.1-SNAPSHOT")
-    compileOnly(group = "us.dynmap", name = "dynmap-api", version = "3.1")
-    implementation(group = "io.papermc", name = "paperlib", version = "1.0.8-SNAPSHOT")
+    compileOnly(group = "io.papermc.paper", name = "paper-api", version = paperApiVersion)
+    compileOnly(group = "us.dynmap", name = "dynmap-api", version = "3.1") {
+        isTransitive = false // Its old Bukkit dependency conflicts with Paper's provided Bukkit API.
+    }
+    compileOnly("de.bluecolored:bluemap-api:2.8.0")
+    compileOnly("com.flowpowered:flow-math:1.0.3")
+    testImplementation(group = "io.papermc.paper", name = "paper-api", version = paperApiVersion)
+    testImplementation("de.bluecolored:bluemap-api:2.8.0")
+    testImplementation("com.flowpowered:flow-math:1.0.3")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.14.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.14.3")
 }
 
 defaultTasks("clean", "build")
 
 tasks {
+    register("verifyPaperApi") {
+        doLast {
+            val paperArtifacts = configurations.getByName("compileClasspath").resolvedConfiguration
+                .resolvedArtifacts.filter {
+                    it.moduleVersion.id.group == "io.papermc.paper" && it.name == "paper-api" && it.type == "jar"
+                }
+            if (paperArtifacts.size != 1 || paperArtifacts.single().moduleVersion.id.version != paperApiVersion) {
+                throw GradleException("Expected exactly one paper-api:jar:$paperApiVersion on compileClasspath; found $paperArtifacts")
+            }
+            println("paper-api:jar:${paperArtifacts.single().moduleVersion.id.version}")
+        }
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+
     processResources {
         val placeholders = mapOf(
             "name" to project.name,
@@ -42,17 +67,10 @@ tasks {
     }
 
     jar {
-        archiveFileName.set("${project.name}-noshade.jar")
-    }
-
-    shadowJar {
-        minimize()
-        relocate("io.papermc.lib", "${project.group}.paperlib")
         archiveFileName.set("${project.name}.jar")
-    }
-
-    build {
-        dependsOn(shadowJar)
+        from("LICENSE") {
+            into("META-INF")
+        }
     }
 }
 

@@ -6,6 +6,7 @@ import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 
 
 public class BorderData
@@ -267,19 +268,26 @@ public class BorderData
 			}
 		}
 
-		int ixLoc = Location.locToBlock(xLoc);
-		int izLoc = Location.locToBlock(zLoc);
+		return safeLandingAt(new Location(loc.getWorld(), xLoc, yLoc, zLoc, loc.getYaw(), loc.getPitch()), flying);
+	}
+
+	// Check a position already inside the border without projecting it to the edge.
+	// The spawn fallback uses this because a world's spawn can itself be unsafe.
+	Location safeLandingAt(Location loc, boolean flying)
+	{
+		int ixLoc = Location.locToBlock(loc.getX());
+		int izLoc = Location.locToBlock(loc.getZ());
 
 		// Make sure the chunk we're checking in is actually loaded
 		Chunk tChunk = loc.getWorld().getChunkAt(CoordXZ.blockToChunk(ixLoc), CoordXZ.blockToChunk(izLoc));
 		if (!tChunk.isLoaded())
 			tChunk.load();
 
-		yLoc = getSafeY(loc.getWorld(), ixLoc, Location.locToBlock(yLoc), izLoc, flying);
-		if (yLoc == -1)
+		double yLoc = getSafeY(loc.getWorld(), ixLoc, Location.locToBlock(loc.getY()), izLoc, flying);
+		if (Double.isNaN(yLoc))
 			return null;
 
-		return new Location(loc.getWorld(), Math.floor(xLoc) + 0.5, yLoc, Math.floor(zLoc) + 0.5, loc.getYaw(), loc.getPitch());
+		return new Location(loc.getWorld(), Math.floor(loc.getX()) + 0.5, yLoc, Math.floor(loc.getZ()) + 0.5, loc.getYaw(), loc.getPitch());
 	}
 	public Location correctedPosition(Location loc, boolean round)
 	{
@@ -290,147 +298,93 @@ public class BorderData
 		return correctedPosition(loc, Config.ShapeRound(), false);
 	}
 
-	//these material IDs are acceptable for places to teleport player; breathable blocks and water
+	// Kept for plugins using the old API. A material alone cannot describe the collision
+	// of stateful blocks such as trapdoors, so safe destination checks use Block.isPassable().
+	@Deprecated
 	public static final EnumSet<Material> safeOpenBlocks = EnumSet.noneOf(Material.class);
-	static
-	{
-		safeOpenBlocks.add(Material.AIR);
-		safeOpenBlocks.add(Material.CAVE_AIR);
-		safeOpenBlocks.add(Material.OAK_SAPLING);
-		safeOpenBlocks.add(Material.SPRUCE_SAPLING);
-		safeOpenBlocks.add(Material.BIRCH_SAPLING);
-		safeOpenBlocks.add(Material.JUNGLE_SAPLING);
-		safeOpenBlocks.add(Material.ACACIA_SAPLING);
-		safeOpenBlocks.add(Material.DARK_OAK_SAPLING);
-		safeOpenBlocks.add(Material.WATER);
-		safeOpenBlocks.add(Material.RAIL);
-		safeOpenBlocks.add(Material.POWERED_RAIL);
-		safeOpenBlocks.add(Material.DETECTOR_RAIL);
-		safeOpenBlocks.add(Material.ACTIVATOR_RAIL);
-		safeOpenBlocks.add(Material.COBWEB);
-		safeOpenBlocks.add(Material.GRASS);
-		safeOpenBlocks.add(Material.FERN);
-		safeOpenBlocks.add(Material.DEAD_BUSH);
-		safeOpenBlocks.add(Material.DANDELION);
-		safeOpenBlocks.add(Material.POPPY);
-		safeOpenBlocks.add(Material.BLUE_ORCHID);
-		safeOpenBlocks.add(Material.ALLIUM);
-		safeOpenBlocks.add(Material.AZURE_BLUET);
-		safeOpenBlocks.add(Material.RED_TULIP);
-		safeOpenBlocks.add(Material.ORANGE_TULIP);
-		safeOpenBlocks.add(Material.WHITE_TULIP);
-		safeOpenBlocks.add(Material.PINK_TULIP);
-		safeOpenBlocks.add(Material.OXEYE_DAISY);
-		safeOpenBlocks.add(Material.BROWN_MUSHROOM);
-		safeOpenBlocks.add(Material.RED_MUSHROOM);
-		safeOpenBlocks.add(Material.TORCH);
-		safeOpenBlocks.add(Material.WALL_TORCH);
-		safeOpenBlocks.add(Material.REDSTONE_WIRE);
-		safeOpenBlocks.add(Material.WHEAT);
-		safeOpenBlocks.add(Material.LADDER);
-		safeOpenBlocks.add(Material.LEVER);
-		safeOpenBlocks.add(Material.LIGHT_WEIGHTED_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.HEAVY_WEIGHTED_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.STONE_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.OAK_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.SPRUCE_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.BIRCH_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.JUNGLE_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.ACACIA_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.DARK_OAK_PRESSURE_PLATE);
-		safeOpenBlocks.add(Material.REDSTONE_TORCH);
-		safeOpenBlocks.add(Material.REDSTONE_WALL_TORCH);
-		safeOpenBlocks.add(Material.STONE_BUTTON);
-		safeOpenBlocks.add(Material.SNOW);
-		safeOpenBlocks.add(Material.SUGAR_CANE);
-		safeOpenBlocks.add(Material.REPEATER);
-		safeOpenBlocks.add(Material.COMPARATOR);
-		safeOpenBlocks.add(Material.OAK_TRAPDOOR);
-		safeOpenBlocks.add(Material.SPRUCE_TRAPDOOR);
-		safeOpenBlocks.add(Material.BIRCH_TRAPDOOR);
-		safeOpenBlocks.add(Material.JUNGLE_TRAPDOOR);
-		safeOpenBlocks.add(Material.ACACIA_TRAPDOOR);
-		safeOpenBlocks.add(Material.DARK_OAK_TRAPDOOR);
-		safeOpenBlocks.add(Material.MELON_STEM);
-		safeOpenBlocks.add(Material.ATTACHED_MELON_STEM);
-		safeOpenBlocks.add(Material.PUMPKIN_STEM);
-		safeOpenBlocks.add(Material.ATTACHED_PUMPKIN_STEM);
-		safeOpenBlocks.add(Material.VINE);
-		safeOpenBlocks.add(Material.NETHER_WART);
-		safeOpenBlocks.add(Material.TRIPWIRE);
-		safeOpenBlocks.add(Material.TRIPWIRE_HOOK);
-		safeOpenBlocks.add(Material.CARROTS);
-		safeOpenBlocks.add(Material.POTATOES);
-		safeOpenBlocks.add(Material.OAK_BUTTON);
-		safeOpenBlocks.add(Material.SPRUCE_BUTTON);
-		safeOpenBlocks.add(Material.BIRCH_BUTTON);
-		safeOpenBlocks.add(Material.JUNGLE_BUTTON);
-		safeOpenBlocks.add(Material.ACACIA_BUTTON);
-		safeOpenBlocks.add(Material.DARK_OAK_BUTTON);
-		safeOpenBlocks.add(Material.SUNFLOWER);
-		safeOpenBlocks.add(Material.LILAC);
-		safeOpenBlocks.add(Material.ROSE_BUSH);
-		safeOpenBlocks.add(Material.PEONY);
-		safeOpenBlocks.add(Material.TALL_GRASS);
-		safeOpenBlocks.add(Material.LARGE_FERN);
-		safeOpenBlocks.add(Material.BEETROOTS);
-		try
-		{	// signs in 1.14 can be different wood types
-			safeOpenBlocks.add(Material.ACACIA_SIGN);
-			safeOpenBlocks.add(Material.ACACIA_WALL_SIGN);
-			safeOpenBlocks.add(Material.BIRCH_SIGN);
-			safeOpenBlocks.add(Material.BIRCH_WALL_SIGN);
-			safeOpenBlocks.add(Material.DARK_OAK_SIGN);
-			safeOpenBlocks.add(Material.DARK_OAK_WALL_SIGN);
-			safeOpenBlocks.add(Material.JUNGLE_SIGN);
-			safeOpenBlocks.add(Material.JUNGLE_WALL_SIGN);
-			safeOpenBlocks.add(Material.OAK_SIGN);
-			safeOpenBlocks.add(Material.OAK_WALL_SIGN);
-			safeOpenBlocks.add(Material.SPRUCE_SIGN);
-			safeOpenBlocks.add(Material.SPRUCE_WALL_SIGN);
-		}
-		catch (NoSuchFieldError ex) {}
-	}
-
-	//these material IDs are ones we don't want to drop the player onto, like cactus or lava or fire or activated Ender portal
+	// Include hazards in the feet, head, or supporting block. Resolve names at startup
+	// so a removed enum constant cannot prevent the plugin from loading.
 	public static final EnumSet<Material> painfulBlocks = EnumSet.noneOf(Material.class);
 	static
 	{
-		painfulBlocks.add(Material.LAVA);
-		painfulBlocks.add(Material.FIRE);
-		painfulBlocks.add(Material.CACTUS);
-		painfulBlocks.add(Material.END_PORTAL);
-		painfulBlocks.add(Material.MAGMA_BLOCK);
+		for (String name : new String[] {"LAVA", "FIRE", "SOUL_FIRE", "CACTUS", "MAGMA_BLOCK",
+			"CAMPFIRE", "SOUL_CAMPFIRE", "END_PORTAL", "END_GATEWAY", "NETHER_PORTAL",
+			"POWDER_SNOW", "SWEET_BERRY_BUSH", "WITHER_ROSE", "POINTED_DRIPSTONE",
+			"BUBBLE_COLUMN"})
+		{
+			Material material = Material.getMaterial(name);
+			if (material != null)
+				painfulBlocks.add(material);
+		}
+
+		// Preserve the old material-only view for API consumers, resolving names so
+		// removed constants cannot stop the plugin from loading. Current checks use
+		// block state passability instead of this approximate list.
+		String legacyOpenNames = """
+			AIR CAVE_AIR VOID_AIR WATER OAK_SAPLING SPRUCE_SAPLING BIRCH_SAPLING
+			JUNGLE_SAPLING ACACIA_SAPLING DARK_OAK_SAPLING MANGROVE_PROPAGULE
+			RAIL POWERED_RAIL DETECTOR_RAIL ACTIVATOR_RAIL COBWEB SHORT_GRASS FERN
+			DEAD_BUSH DANDELION POPPY BLUE_ORCHID ALLIUM AZURE_BLUET RED_TULIP
+			ORANGE_TULIP WHITE_TULIP PINK_TULIP OXEYE_DAISY BROWN_MUSHROOM
+			RED_MUSHROOM TORCH WALL_TORCH REDSTONE_WIRE WHEAT LADDER LEVER
+			LIGHT_WEIGHTED_PRESSURE_PLATE HEAVY_WEIGHTED_PRESSURE_PLATE
+			STONE_PRESSURE_PLATE OAK_PRESSURE_PLATE SPRUCE_PRESSURE_PLATE
+			BIRCH_PRESSURE_PLATE JUNGLE_PRESSURE_PLATE ACACIA_PRESSURE_PLATE
+			DARK_OAK_PRESSURE_PLATE REDSTONE_TORCH REDSTONE_WALL_TORCH
+			STONE_BUTTON SNOW SUGAR_CANE REPEATER COMPARATOR OAK_TRAPDOOR
+			SPRUCE_TRAPDOOR BIRCH_TRAPDOOR JUNGLE_TRAPDOOR ACACIA_TRAPDOOR
+			DARK_OAK_TRAPDOOR MELON_STEM ATTACHED_MELON_STEM PUMPKIN_STEM
+			ATTACHED_PUMPKIN_STEM VINE NETHER_WART TRIPWIRE TRIPWIRE_HOOK
+			CARROTS POTATOES OAK_BUTTON SPRUCE_BUTTON BIRCH_BUTTON JUNGLE_BUTTON
+			ACACIA_BUTTON DARK_OAK_BUTTON SUNFLOWER LILAC ROSE_BUSH PEONY
+			TALL_GRASS LARGE_FERN BEETROOTS ACACIA_SIGN ACACIA_WALL_SIGN
+			BIRCH_SIGN BIRCH_WALL_SIGN DARK_OAK_SIGN DARK_OAK_WALL_SIGN
+			JUNGLE_SIGN JUNGLE_WALL_SIGN OAK_SIGN OAK_WALL_SIGN SPRUCE_SIGN
+			SPRUCE_WALL_SIGN
+			""";
+		for (String name : legacyOpenNames.trim().split("\\s+"))
+		{
+			Material material = Material.getMaterial(name);
+			if (material != null)
+				safeOpenBlocks.add(material);
+		}
 	}
 
-	// check if a particular spot consists of 2 breathable blocks over something relatively solid
+	private boolean isSafeOpenBlock(Block block)
+	{
+		return block.isPassable() && !painfulBlocks.contains(block.getType());
+	}
+
+	// Check for two passable, non-hazardous blocks over a safe landing surface.
 	private boolean isSafeSpot(World world, int X, int Y, int Z, boolean flying)
 	{
+		int maxHeight = world.getMaxHeight();
+		if (Y < world.getMinHeight() || Y > maxHeight)
+			return false;
+
 		boolean safe =
-			// target block open and safe or is above maximum Y coordinate
-			(Y == world.getMaxHeight()
-			 || (safeOpenBlocks.contains(world.getBlockAt(X, Y, Z).getType())
-			     // above target block open and safe or is above maximum Y coordinate
-			     && (Y + 1 == world.getMaxHeight()
-				 || safeOpenBlocks.contains(world.getBlockAt(X, Y + 1, Z).getType()))));
+			(Y == maxHeight
+			 || (isSafeOpenBlock(world.getBlockAt(X, Y, Z))
+			     && (Y + 1 >= maxHeight || isSafeOpenBlock(world.getBlockAt(X, Y + 1, Z)))));
 		if (!safe || flying)
 			return safe;
 
-		Material below = world.getBlockAt(X, Y - 1, Z).getType();
-		return (safe
-			 && (!safeOpenBlocks.contains(below) || below == Material.WATER)	// below target block not open/breathable (so presumably solid), or is water
-			 && !painfulBlocks.contains(below)									// below target block not painful
-			);
-	}
+		if (Y <= world.getMinHeight())
+			return false;
 
-	private static final int limBot = 0;
+		Block below = world.getBlockAt(X, Y - 1, Z);
+		return (below.getType() == Material.WATER || !below.isPassable())
+			&& !painfulBlocks.contains(below.getType());
+	}
 
 	// find closest safe Y position from the starting position
 	private double getSafeY(World world, int X, int Y, int Z, boolean flying)
 	{
-		// artificial height limit of 127 added for Nether worlds since CraftBukkit still incorrectly returns 255 for their max height, leading to players sent to the "roof" of the Nether; we don't bother checking if Y = 126 or 127 are safe because they never will be unless there's a hole in the bedrock
+		// Keep Nether correction below the bedrock roof even though the world's build
+		// height extends above it.
 		final boolean isNether = world.getEnvironment() == World.Environment.NETHER;
-		int limTop = isNether ? 125 : world.getMaxHeight();
+		int limTop = isNether ? Math.min(125, world.getMaxHeight()) : world.getMaxHeight();
+		int limBot = world.getMinHeight();
 		// add 1 because getHighestBlockYAt() will give us the Y coordinate of a solid block, and we want the air block above it
 		final int highestBlockBoundary = Math.min(world.getHighestBlockYAt(X, Z) + 1, limTop);
 
@@ -448,7 +402,7 @@ public class BorderData
 				if (flying)
 					Y = limTop;
 				else
-					Y = highestBlockBoundary; // there will never be a save block to stand on for Y values > highestBlockBoundary
+					Y = highestBlockBoundary; // no safe block to stand on above this boundary
 			}
 		}
 		if (Y < limBot)
@@ -460,9 +414,9 @@ public class BorderData
 		// Expanding Y search method adapted from Acru's code in the Nether plugin
 
 		// Note that we want to include limTop in the search - in the extreme case, world.getMaxHeight() should be included since the player can stand on top of the highest block
-		for(int y1 = Y, y2 = Y; (y1 > limBot) || (y2 <= limTop); y1--, y2++){
+		for(int y1 = Y, y2 = Y; (y1 >= limBot) || (y2 <= limTop); y1--, y2++){
 			// Look below.
-			if(y1 > limBot)
+			if(y1 >= limBot)
 			{
 				if (isSafeSpot(world, X, y1, Z, flying))
 					return (double)y1;
@@ -476,7 +430,7 @@ public class BorderData
 			}
 		}
 
-		return -1.0;	// no safe Y location?!?!? Must be a rare spot in a Nether world or something
+		return Double.NaN;	// no safe Y location
 	}
 
 

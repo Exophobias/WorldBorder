@@ -3,11 +3,22 @@ package com.wimbli.WorldBorder;
 import java.io.*;
 import java.util.ArrayList;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
-import java.nio.IntBuffer;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.bukkit.entity.Player;
 import org.bukkit.World;
@@ -22,9 +33,16 @@ import javax.imageio.*;
 
 public class WorldFileData
 {
+	private static final Pattern REGION_FILE_NAME = Pattern.compile("r\\.(-?\\d+)\\.(-?\\d+)\\.(mca|mcr)", Pattern.CASE_INSENSITIVE);
+	private static final int REGION_HEADER_BYTES = 8192;
+	private static final int MAX_REGION_COORDINATE = 60_000; // Beyond Minecraft's +/-30M block world.
+	private static final LinkOption NO_LINKS = LinkOption.NOFOLLOW_LINKS;
+
 	private transient World world;
 	private transient File regionFolder = null;
 	private transient File[] regionFiles = null;
+	private transient Map<CoordXZ, File> filesByCoordinates = new HashMap<>();
+	private transient Map<File, CoordXZ> coordinatesByFile = new HashMap<>();
 	private transient Player notifyPlayer = null;
 	private transient Map<CoordXZ, List<Boolean>> regionChunkExistence = Collections.synchronizedMap(new HashMap<CoordXZ, List<Boolean>>());
 
@@ -40,46 +58,63 @@ public class WorldFileData
 		WorldFileData newData = new WorldFileData(world, notifyPlayer);
 
 		String subFolder = "region";
-		if (type == WorldFileDataType.REGION) subFolder = "region";
-		else if (type == WorldFileDataType.POI) subFolder = "poi";
+		if (type == WorldFileDataType.POI) subFolder = "poi";
 		else if (type == WorldFileDataType.ENTITIES) subFolder = "entities";
 
-		newData.regionFolder = new File(newData.world.getWorldFolder(), subFolder);
-		if (!newData.regionFolder.exists() || !newData.regionFolder.isDirectory())
+		try
 		{
-			// check for region folder inside a DIM* folder (DIM-1 for nether, DIM1 for end, DIMwhatever for custom world types)
-			File[] possibleDimFolders = newData.world.getWorldFolder().listFiles(new DimFolderFileFilter());
-			for (File possibleDimFolder : possibleDimFolders)
+			String legacyDimension = null;
+			if (world.getEnvironment() == World.Environment.NETHER) legacyDimension = "DIM-1";
+			else if (world.getEnvironment() == World.Environment.THE_END) legacyDimension = "DIM1";
+			Path folder = resolveDataFolder(world.getWorldFolder().toPath(), world.getKey().getNamespace(), world.getKey().getKey(), legacyDimension, subFolder);
+			if (folder == null)
 			{
-				File possible = new File(newData.world.getWorldFolder(), possibleDimFolder.getName() + File.separator + subFolder);
-				if (possible.exists() && possible.isDirectory())
+				if (silent && type != WorldFileDataType.REGION)
 				{
-					newData.regionFolder = possible;
-					break;
+					newData.regionFiles = new File[0];
+					return newData;
 				}
-			}
-			if (!newData.regionFolder.exists() || !newData.regionFolder.isDirectory())
-			{
-				if (!silent)
-				newData.sendMessage("Could not validate folder for world's "+subFolder+" files. Looked in "+newData.world.getWorldFolder().getPath()+" for valid DIM* folder with a region folder in it.");
+				if (!silent) newData.sendMessage("Could not find the " + subFolder + " folder for world " + world.getName() + ".");
 				return null;
 			}
-		}
+			newData.regionFolder = folder.toFile();
 
-		// Accepted region file formats: MCR is from late beta versions through 1.1, MCA is from 1.2+
-		newData.regionFiles = newData.regionFolder.listFiles(new ExtFileFilter(".MCA"));
-		if (newData.regionFiles == null || newData.regionFiles.length == 0)
+			File[] entries = folder.toFile().listFiles();
+			if (entries == null) throw new IOException("Could not list " + folder);
+			List<File> validFiles = new ArrayList<>();
+			for (File entry : entries)
+			{
+				String lowerName = entry.getName().toLowerCase(Locale.ROOT);
+				if (!lowerName.endsWith(".mca") && !lowerName.endsWith(".mcr")) continue;
+				CoordXZ coordinates = parseRegionFileName(entry.getName());
+				Path file = entry.toPath();
+				if (!Files.isRegularFile(file, NO_LINKS) || Files.isSymbolicLink(file))
+					throw new IOException("Region data path is not a regular file: " + file);
+				if (newData.filesByCoordinates.putIfAbsent(coordinates, entry) != null)
+					throw new IOException("Duplicate region coordinates in " + folder + ": " + entry.getName());
+				readChunkLocations(file); // Reject unreadable or damaged headers before Fill or Trim starts.
+				newData.coordinatesByFile.put(entry, coordinates);
+				validFiles.add(entry);
+			}
+			if (validFiles.isEmpty())
+			{
+				if (silent && type != WorldFileDataType.REGION)
+				{
+					newData.regionFiles = new File[0];
+					return newData;
+				}
+				if (!silent) newData.sendMessage("Could not find any region data files in " + folder);
+				return null;
+			}
+			newData.regionFiles = validFiles.toArray(new File[0]);
+			Arrays.sort(newData.regionFiles, Comparator.comparing(File::getName));
+			return newData;
+		}
+		catch (IOException | IllegalArgumentException ex)
 		{
-			newData.regionFiles = newData.regionFolder.listFiles(new ExtFileFilter(".MCR"));
-			if (newData.regionFiles == null || newData.regionFiles.length == 0)
-			{
-				if (!silent)
-				newData.sendMessage("Could not find any "+subFolder+" files. Looked in: "+newData.regionFolder.getPath());
-				return null;
-			}
+			newData.sendMessage("Cannot safely use " + subFolder + " data for world " + world.getName() + ": " + ex.getMessage());
+			return null;
 		}
-
-		return newData;
 	}
 
 	// the constructor is private; use create() method above to create an instance of this class.
@@ -87,6 +122,132 @@ public class WorldFileData
 	{
 		this.world = world;
 		this.notifyPlayer = notifyPlayer;
+	}
+
+	// Paper may give the dimension folder directly. Older Bukkit worlds put Nether/End data
+	// below DIM-1/DIM1; newer Paper worlds use dimensions/<namespace>/<key>.
+	// Never guess among arbitrary DIM* folders or follow a symlink into another world.
+	static Path resolveDataFolder(Path worldFolder, String namespace, String key, String legacyDimension, String subFolder) throws IOException
+	{
+		if (!subFolder.equals("region") && !subFolder.equals("poi") && !subFolder.equals("entities"))
+			throw new IOException("Unexpected data folder type: " + subFolder);
+		Path root = worldFolder.toRealPath();
+		if (!Files.isDirectory(root)) throw new IOException("World folder is not a directory: " + root);
+		List<Path> candidates = new ArrayList<>();
+		candidates.add(Path.of(subFolder));
+		if (namespace != null && key != null && !namespace.isBlank() && !key.isBlank())
+			candidates.add(Path.of("dimensions").resolve(namespace).resolve(key).resolve(subFolder));
+		if (legacyDimension != null)
+			candidates.add(Path.of(legacyDimension).resolve(subFolder));
+
+		Path selected = null;
+		for (Path relative : candidates)
+		{
+			Path parent = relative.getParent();
+			if (parent == null || directoryExistsWithoutLinks(root, parent))
+			{
+				Path sectorFolder = root.resolve(parent == null ? Path.of("") : parent).resolve("sectors");
+				if (Files.exists(sectorFolder, NO_LINKS))
+					throw new IOException("SectorFile storage is present at " + sectorFolder + "; MCA trimming/filling is unsafe");
+			}
+			if (!directoryExistsWithoutLinks(root, relative)) continue;
+			Path candidate = root.resolve(relative);
+			if (selected != null && !selected.equals(candidate))
+				throw new IOException("Multiple " + subFolder + " folders found: " + selected + " and " + candidate);
+			selected = candidate;
+		}
+		return selected;
+	}
+
+	private static boolean directoryExistsWithoutLinks(Path root, Path relative) throws IOException
+	{
+		if (relative.isAbsolute() || !relative.normalize().equals(relative))
+			throw new IOException("Unsafe dimension path: " + relative);
+		Path current = root;
+		for (Path component : relative)
+		{
+			String name = component.toString();
+			if (name.isEmpty() || name.equals(".") || name.equals(".."))
+				throw new IOException("Unsafe dimension path: " + relative);
+			current = current.resolve(component);
+			if (!Files.exists(current, NO_LINKS)) return false;
+			if (Files.isSymbolicLink(current) || !Files.isDirectory(current, NO_LINKS))
+				throw new IOException("Data folder path is not a real directory: " + current);
+		}
+		return true;
+	}
+
+	static CoordXZ parseRegionFileName(String name) throws IOException
+	{
+		Matcher match = REGION_FILE_NAME.matcher(name);
+		if (!match.matches()) throw new IOException("Invalid region file name: " + name);
+		try
+		{
+			int x = Integer.parseInt(match.group(1));
+			int z = Integer.parseInt(match.group(2));
+			if (Math.abs((long) x) > MAX_REGION_COORDINATE || Math.abs((long) z) > MAX_REGION_COORDINATE)
+				throw new IOException("Region coordinates exceed the supported world range: " + name);
+			return new CoordXZ(x, z);
+		}
+		catch (NumberFormatException ex)
+		{
+			throw new IOException("Region coordinates are out of range: " + name, ex);
+		}
+	}
+
+	// Region, POI and entity MCA files share the same location-header format.
+	// A bad header must not be interpreted as an empty region: Fill could regenerate
+	// existing chunks and Trim could otherwise continue after losing its safety data.
+	static List<Boolean> readChunkLocations(Path file) throws IOException
+	{
+		if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, NO_LINKS))
+			throw new IOException("Region data path is not a regular file: " + file);
+		try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, NO_LINKS))
+		{
+			long length = channel.size();
+			if (length < REGION_HEADER_BYTES)
+				throw new IOException("Region header is truncated: " + file);
+			ByteBuffer header = ByteBuffer.allocate(REGION_HEADER_BYTES);
+			while (header.hasRemaining())
+			{
+				if (channel.read(header) <= 0) throw new IOException("Region header could not be fully read: " + file);
+			}
+			header.flip();
+			List<Boolean> locations = new ArrayList<>(1024);
+			NavigableMap<Integer, Integer> occupiedSectors = new TreeMap<>();
+			for (int i = 0; i < 1024; i++)
+			{
+				int pointer = header.getInt();
+				int sectorOffset = pointer >>> 8;
+				int sectorCount = pointer & 0xff;
+				if (pointer != 0 && (sectorOffset < 2 || sectorCount == 0 || ((long) sectorOffset + sectorCount) * 4096 > length))
+					throw new IOException("Invalid chunk pointer " + i + " in " + file);
+				if (pointer != 0)
+				{
+					int end = sectorOffset + sectorCount;
+					Map.Entry<Integer, Integer> before = occupiedSectors.floorEntry(sectorOffset);
+					Map.Entry<Integer, Integer> after = occupiedSectors.ceilingEntry(sectorOffset);
+					if ((before != null && before.getValue() > sectorOffset) || (after != null && after.getKey() < end))
+						throw new IOException("Overlapping chunk pointers in " + file);
+					occupiedSectors.put(sectorOffset, end);
+				}
+				locations.add(pointer != 0);
+			}
+			return locations;
+		}
+	}
+
+	public Path validatedRegionFile(int index) throws IOException
+	{
+		File file = regionFile(index);
+		if (file == null) throw new IOException("Invalid region file index: " + index);
+		Path folder = regionFolder.toPath();
+		Path path = file.toPath();
+		if (Files.isSymbolicLink(folder) || !Files.isDirectory(folder, NO_LINKS)
+			|| !folder.equals(path.getParent()) || Files.isSymbolicLink(path) || !Files.isRegularFile(path, NO_LINKS))
+			throw new IOException("Region data path changed or is unsafe: " + path);
+		readChunkLocations(path);
+		return path;
 	}
 
 
@@ -111,7 +272,7 @@ public class WorldFileData
 	// return a region file by index
 	public File regionFile(int index)
 	{
-		if (regionFiles.length < index)
+		if (index < 0 || index >= regionFiles.length)
 			return null;
 		return regionFiles[index];
 	}
@@ -120,19 +281,7 @@ public class WorldFileData
 	public CoordXZ regionFileCoordinates(int index)
 	{
 		File regionFile = this.regionFile(index);
-		String[] coords = regionFile.getName().split("\\.");
-		int x, z;
-		try
-		{
-			x = Integer.parseInt(coords[1]);
-			z = Integer.parseInt(coords[2]);
-			return new CoordXZ (x, z);
-		}
-		catch(Exception ex)
-		{
-			sendMessage("Error! Region file found with abnormal name: "+regionFile.getName());
-			return null;
-		}
+		return regionFile == null ? null : coordinatesByFile.get(regionFile);
 	}
 
 
@@ -191,48 +340,21 @@ public class WorldFileData
 		if (data != null)
 			return data;
 
-		// data for the specified region isn't loaded yet, so init it as empty and try to find the file and load the data
-		data = new ArrayList<Boolean>(1024);
-		for (int i = 0; i < 1024; i++)
+		File file = filesByCoordinates.get(region);
+		if (file == null)
 		{
-			data.add(Boolean.FALSE);
+			data = new ArrayList<>(Collections.nCopies(1024, Boolean.FALSE));
 		}
-
-		for (int i = 0; i < regionFiles.length; i++)
+		else
 		{
-			CoordXZ coord = regionFileCoordinates(i);
-			// is this region file the one we're looking for?
-			if ( ! coord.equals(region))
-				continue;
-
-			try (final RandomAccessFile regionData = new RandomAccessFile(this.regionFile(i), "r"))
+			try
 			{
-				final byte[] header = new byte[8192];
- 				regionData.readFully(header);
-				IntBuffer headerAsInts = ByteBuffer.wrap(header).asIntBuffer();
-
-				// first 4096 bytes of region file consists of 4-byte int pointers to chunk data in the file (32*32 chunks = 1024; 1024 chunks * 4 bytes each = 4096)
-				for (int j = 0; j < 1024; j++)
-				{
-					// if chunk pointer data is 0, chunk doesn't exist yet; otherwise, it does
-					if (headerAsInts.get() != 0)
-						data.set(j, true);
-				}
-				// Read timestamps
-				for (int j = 0; j < 1024; j++)
-				{
-					// if timestamp is zero, it is protochunk (ignore it)
-					if ((headerAsInts.get() == 0) && data.get(j))
-						data.set(j, false);
-				}
-			}
-			catch (FileNotFoundException ex)
-			{
-				sendMessage("Error! Could not open region file to find generated chunks: "+this.regionFile(i).getName());
+				data = readChunkLocations(file.toPath());
 			}
 			catch (IOException ex)
 			{
-				sendMessage("Error! Could not read region file to find generated chunks: "+this.regionFile(i).getName());
+				sendMessage("Could not read region file " + file.getName() + ": " + ex.getMessage());
+				throw new IllegalStateException("Cannot safely read region data for " + world.getName(), ex);
 			}
 		}
 		regionChunkExistence.put(region, data);
@@ -247,41 +369,6 @@ public class WorldFileData
 		if (notifyPlayer != null && notifyPlayer.isOnline())
 			notifyPlayer.sendMessage("[WorldData] " + text);
 	}
-
-	// file filter used for region files
-	private static class ExtFileFilter implements FileFilter
-	{
-		String ext;
-		public ExtFileFilter(String extension)
-		{
-			this.ext = extension.toLowerCase();
-		}
-
-		@Override
-		public boolean accept(File file)
-		{
-			return (
-				   file.exists()
-				&& file.isFile()
-				&& file.getName().toLowerCase().endsWith(ext)
-				);
-		}
-	}
-
-	// file filter used for DIM* folders (for nether, End, and custom world types)
-	private static class DimFolderFileFilter implements FileFilter
-	{
-		@Override
-		public boolean accept(File file)
-		{
-			return (
-				   file.exists()
-				&& file.isDirectory()
-				&& file.getName().toLowerCase().startsWith("dim")
-				);
-		}
-	}
-
 
 	// crude chunk map PNG image output, for debugging
 	private void testImage(CoordXZ region, List<Boolean> data) {

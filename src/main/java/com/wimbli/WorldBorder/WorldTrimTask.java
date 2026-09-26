@@ -1,9 +1,12 @@
 package com.wimbli.WorldBorder;
 
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -122,7 +125,7 @@ public class WorldTrimTask implements Runnable
 		while (counter <= chunksPerRun)
 		{
 			// in case the task has been paused while we're repeating...
-			if (paused)
+			if (server == null || paused)
 				return;
 
 			long now = Config.Now();
@@ -151,32 +154,16 @@ public class WorldTrimTask implements Runnable
 				addEdgeChunks();
 				addInnerChunks();
 			}
-			else if (currentChunk == 124 && trimChunks.size() == 124)
-			{	// region is completely _outside_ border based on edge chunks, so delete file and move on to next
-				counter += 16;
-				trimChunks = regionChunks;
-				unloadChunks();
-				reportTrimmedRegions++;
-				File regionFile = worldData.regionFile(currentRegion);
-				if (!regionFile.delete())
-				{
-					sendMessage("Error! Region file which is outside the border could not be deleted: "+regionFile.getName());
-					wipeChunks();
-				}
-				else
-				{
-					// if DynMap is installed, re-render the trimmed region ... disabled since it's not currently working, oh well
-//					DynMapFeatures.renderRegion(world.getName(), new CoordXZ(regionX, regionZ));
-				}
-
-				nextFile();
-				continue;
-			}
 			else if (currentChunk == 1024)
-			{	// last chunk of the region has been checked, time to wipe out whichever chunks are outside the border
+			{	// Only delete an entire file after checking every chunk. A small border can sit
+				// wholly inside a region even when all of its edge chunks are outside it.
 				counter += 32;
-				unloadChunks();
-				wipeChunks();
+				if (!unloadChunks()) return;
+				if (trimChunks.size() == 1024)
+				{
+					if (!deleteRegionFile()) return;
+				}
+				else if (!trimChunks.isEmpty() && !wipeChunks()) return;
 				nextFile();
 				continue;
 			}
@@ -219,7 +206,11 @@ public class WorldTrimTask implements Runnable
 		// get the X and Z coordinates of the current region
 		CoordXZ coord = worldData.regionFileCoordinates(currentRegion);
 		if (coord == null)
+		{
+			sendMessage("Region file coordinates are unavailable; trim stopped.");
+			stop();
 			return false;
+		}
 
 		regionX = coord.x;
 		regionZ = coord.z;
@@ -276,70 +267,94 @@ public class WorldTrimTask implements Runnable
 	}
 
 	// make sure chunks set to be trimmed are not currently loaded by the server
-	private void unloadChunks()
+	private boolean unloadChunks()
 	{
 		for (CoordXZ unload : trimChunks)
 		{
 			if (world.isChunkLoaded(unload.x, unload.z))
-				world.unloadChunk(unload.x, unload.z, false);
-		}
-		counter += trimChunks.size();
-	}
-
-	// edit region file to wipe all chunk pointers for chunks outside the border
-	private void wipeChunks()
-	{
-		File regionFile = worldData.regionFile(currentRegion);
-		if (!regionFile.canWrite())
-		{
-			if (!regionFile.setWritable(true))
-				throw new RuntimeException();
-
-			if (!regionFile.canWrite())
 			{
-				sendMessage("Error! region file is locked and can't be trimmed: "+regionFile.getName());
-				return;
+				if (!world.unloadChunk(unload.x, unload.z, false) || world.isChunkLoaded(unload.x, unload.z))
+				{
+					sendMessage("Cannot unload chunk " + unload.x + "," + unload.z + "; trim stopped before editing its region file.");
+					stop();
+					return false;
+				}
 			}
 		}
+		counter += trimChunks.size();
+		return true;
+	}
 
+	private boolean deleteRegionFile()
+	{
+		try
+		{
+			Files.delete(worldData.validatedRegionFile(currentRegion));
+			reportTrimmedRegions++;
+			return true;
+		}
+		catch (IOException | IllegalStateException ex)
+		{
+			sendMessage("Could not safely delete region file: " + ex.getMessage());
+			stop();
+			return false;
+		}
+	}
+
+	// Edit only the location and timestamp entries of outside chunks in a validated MCA file.
+	private boolean wipeChunks()
+	{
 		// since our stored chunk positions are based on world, we need to offset those to positions in the region file
 		int offsetX = CoordXZ.regionToChunk(regionX);
 		int offsetZ = CoordXZ.regionToChunk(regionZ);
-		long wipePos = 0;
 		int chunkCount = 0;
 
-		try
+		try (FileChannel file = FileChannel.open(worldData.validatedRegionFile(currentRegion),
+			StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.DSYNC, LinkOption.NOFOLLOW_LINKS))
 		{
-			RandomAccessFile unChunk = new RandomAccessFile(regionFile, "rwd");
 			for (CoordXZ wipe : trimChunks)
 			{
+				int localX = wipe.x - offsetX;
+				int localZ = wipe.z - offsetZ;
+				if (localX < 0 || localX >= 32 || localZ < 0 || localZ >= 32)
+					throw new IOException("Chunk does not belong to region " + regionX + "," + regionZ);
+				long wipePos = 4L * (localX + localZ * 32);
+				ByteBuffer pointer = ByteBuffer.allocate(4);
+				if (file.read(pointer, wipePos) != 4) throw new IOException("Could not read chunk pointer at " + wipePos);
+				pointer.flip();
 				// if the chunk pointer is empty (chunk doesn't technically exist), no need to wipe the already empty pointer
-				if (!worldData.doesChunkExist(wipe.x, wipe.z))
-					continue;
+				if (pointer.getInt() == 0) continue;
 
-				// wipe this extraneous chunk's pointer... note that this method isn't perfect since the actual chunk data is left orphaned,
-				// but Minecraft will overwrite the orphaned data sector if/when another chunk is created in the region, so it's not so bad
-				wipePos = 4 * ((wipe.x - offsetX) + ((wipe.z - offsetZ) * 32));
-				unChunk.seek(wipePos);
-				unChunk.writeInt(0);
+				writeZero(file, wipePos);
+				writeZero(file, 4096 + wipePos);
 				chunkCount++;
 			}
-			unChunk.close();
+			file.force(true);
 
 			// if DynMap is installed, re-render the trimmed chunks ... disabled since it's not currently working, oh well
 //			DynMapFeatures.renderChunks(world.getName(), trimChunks);
 
 			reportTrimmedChunks += chunkCount;
+			counter += trimChunks.size();
+			return true;
 		}
-		catch (FileNotFoundException ex)
+		catch (IOException | IllegalStateException ex)
 		{
-			sendMessage("Error! Could not open region file to wipe individual chunks: "+regionFile.getName());
+			sendMessage("Could not safely trim region file: " + ex.getMessage());
+			stop();
+			return false;
 		}
-		catch (IOException ex)
+	}
+
+	private static void writeZero(FileChannel file, long position) throws IOException
+	{
+		ByteBuffer zero = ByteBuffer.allocate(4);
+		while (zero.hasRemaining())
 		{
-			sendMessage("Error! Could not modify region file to wipe individual chunks: "+regionFile.getName());
+			int written = file.write(zero, position);
+			if (written <= 0) throw new IOException("Could not write region header at " + position);
+			position += written;
 		}
-		counter += trimChunks.size();
 	}
 
 	private boolean isChunkInsideBorder(CoordXZ chunk)
@@ -360,7 +375,13 @@ public class WorldTrimTask implements Runnable
 		{
 			currentType = WorldFileDataType.POI;
 			worldData = WorldFileData.create(world, notifyPlayer, currentType, true);
-			if (worldData != null) resetAndRestart = true;
+			if (worldData == null)
+			{
+				sendMessage("POI files could not be validated; trim stopped.");
+				stop();
+				return;
+			}
+			resetAndRestart = true;
 		}
 
 		// If trim all types : poi -> entities
@@ -368,7 +389,13 @@ public class WorldTrimTask implements Runnable
 		{
 			currentType = WorldFileDataType.ENTITIES;
 			worldData = WorldFileData.create(world, notifyPlayer, currentType, true);
-			if (worldData != null) resetAndRestart = true;
+			if (worldData == null)
+			{
+				sendMessage("Entity files could not be validated; trim stopped.");
+				stop();
+				return;
+			}
+			resetAndRestart = true;
 		}
 
 		if (resetAndRestart) 
@@ -379,10 +406,11 @@ public class WorldTrimTask implements Runnable
 			reportTrimmedRegions = 0;
 			reportTrimmedChunks = 0;
 			counter = 0;
-			nextFile();
-
-			paused = false;
-			readyToGo = true;
+			if (nextFile())
+			{
+				paused = false;
+				readyToGo = true;
+			}
 			return;
 		}
 
@@ -459,7 +487,7 @@ public class WorldTrimTask implements Runnable
 	 * @return Percentage
 	 */
 	public double getPercentageCompleted() {
-		return ((double) (reportTotal) / (double) reportTarget) * 100;
+		return reportTarget == 0 ? 100 : ((double) (reportTotal) / (double) reportTarget) * 100;
 	}
 
 	/**
