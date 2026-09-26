@@ -29,6 +29,13 @@ public class CmdTrim extends WBCmd
 	@Override
 	public void execute(CommandSender sender, Player player, List<String> params, String worldName)
 	{
+		String action = params.isEmpty() ? "" : params.get(0).toLowerCase();
+		if (!action.equals("cancel") && !action.equals("stop") && !action.equals("pause"))
+		{
+			sender.sendMessage(C_ERR + "Trim is disabled in this Paper 26.3 port. It edits region files while the world is loaded; use an offline region editor instead.");
+			return;
+		}
+
 		boolean confirm = false;
 		// check for "cancel", "pause", or "confirm"
 		if (params.size() >= 1)

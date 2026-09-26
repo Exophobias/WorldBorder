@@ -12,7 +12,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.Server;
 import org.bukkit.World;
 
-import io.papermc.lib.PaperLib;
 
 import com.wimbli.WorldBorder.Events.WorldBorderFillFinishedEvent;
 import com.wimbli.WorldBorder.Events.WorldBorderFillStartEvent;
@@ -148,6 +147,7 @@ public class WorldFillTask implements Runnable
 		this.border.setRadiusZ(border.getRadiusZ() + fillDistance);
 		this.x = CoordXZ.blockToChunk((int)border.getX());
 		this.z = CoordXZ.blockToChunk((int)border.getZ());
+		this.lastChunk = new CoordXZ(this.x, this.z);
 
 		int chunkWidthX = (int) Math.ceil((double)((border.getRadiusX() + 16) * 2) / 16);
 		int chunkWidthZ = (int) Math.ceil((double)((border.getRadiusZ() + 16) * 2) / 16);
@@ -176,6 +176,22 @@ public class WorldFillTask implements Runnable
 
 	@Override
 	public void run()
+	{
+		try
+		{
+			runIteration();
+		}
+		catch (IllegalStateException ex)
+		{
+			// A region header may change or become unreadable after startup. Keep
+			// progress for a later retry, but never treat uncertain chunks as empty.
+			sendMessage("Cannot safely continue world fill: " + ex.getMessage());
+			Config.StoreFillTask();
+			stop(true);
+		}
+	}
+
+	private void runIteration()
 	{
 		if (continueNotice)
 		{	// notify user that task has continued automatically
@@ -215,6 +231,13 @@ public class WorldFillTask implements Runnable
 		{
 			if (cf.isDone())
 			{
+				if (cf.isCompletedExceptionally() || cf.isCancelled())
+				{
+					sendMessage("A chunk load failed; stopping world fill without marking it generated.");
+					Config.StoreFillTask();
+					stop(true);
+					return;
+				}
 				++chunksProcessedLastTick;
 				// If cf.get() returned the chunk reliably, pendingChunks could
 				// be a set and we wouldn't have to map CFs to coords ...
@@ -247,9 +270,9 @@ public class WorldFillTask implements Runnable
 
 		for (CoordXZ unload : chunksToUnload)
 		{
-			if (!chunkOnUnloadPreventionList(unload.x, unload.z))
+			if (!chunkOnUnloadPreventionList(unload.x, unload.z) && !pendingChunks.containsValue(unload))
 			{
-				world.setChunkForceLoaded(unload.x, unload.z, false);
+				world.removePluginChunkTicket(unload.x, unload.z, WorldBorder.plugin);
 				// this causes severe TPS loss by forcibly unloading chunks - instead, let server unload them naturally
 				//world.unloadChunkRequest(unload.x, unload.z);
 			}
@@ -317,18 +340,18 @@ public class WorldFillTask implements Runnable
 				}
 			}
 
-			pendingChunks.put(getPaperLibChunk(world, x, z, true), new CoordXZ(x, z));
+			pendingChunks.put(loadChunkWithTicket(world, x, z, true), new CoordXZ(x, z));
 
 			// There need to be enough nearby chunks loaded to make the server populate a chunk with trees, snow, etc.
 			// So, we keep the last few chunks loaded, and need to also temporarily load an extra inside chunk (neighbor closest to center of map)
 			int popX = !isZLeg ? x : (x + (isNeg ? -1 : 1));
 			int popZ = isZLeg ? z : (z + (!isNeg ? -1 : 1));
 
-			pendingChunks.put(getPaperLibChunk(world, popX, popZ, false), new CoordXZ(popX, popZ));
+			pendingChunks.put(loadChunkWithTicket(world, popX, popZ, true), new CoordXZ(popX, popZ));
 			preventUnload.add(new UnloadDependency(popX, popZ, x, z));
 			
 			// make sure the previous chunk in our spiral is loaded as well (might have already existed and been skipped over)
-			pendingChunks.put(getPaperLibChunk(world, lastChunk.x, lastChunk.z, false), new CoordXZ(lastChunk.x, lastChunk.z)); // <-- new CoordXZ as lastChunk isn't immutable
+			pendingChunks.put(loadChunkWithTicket(world, lastChunk.x, lastChunk.z, true), new CoordXZ(lastChunk.x, lastChunk.z)); // <-- new CoordXZ as lastChunk isn't immutable
 			preventUnload.add(new UnloadDependency(lastChunk.x, lastChunk.z, x, z));
 
 			// move on to next chunk
@@ -447,18 +470,11 @@ public class WorldFillTask implements Runnable
 			server.getScheduler().cancelTask(taskID);
 		server = null;
 
-		// go ahead and unload any chunks we still have loaded
-		// Set preventUnload to empty first so the ChunkUnloadEvent Listener
-		// doesn't get in our way
-		if (preventUnload != null)
+		// Release only our plugin-owned tickets. Never clear the server's global
+		// force-load flag, which may belong to an administrator or another plugin.
+		if (world != null)
 		{
-			Set<UnloadDependency> tempPreventUnload = preventUnload;
-			preventUnload = null;
-			for (UnloadDependency entry: tempPreventUnload)
-			{
-				world.setChunkForceLoaded(entry.neededX, entry.neededZ, false);
-				world.unloadChunkRequest(entry.neededX, entry.neededZ);
-			}
+			world.removePluginChunkTickets(WorldBorder.plugin);
 		}
 	}
 
@@ -638,18 +654,45 @@ public class WorldFillTask implements Runnable
 		return reportTarget;
 	}
 
-	private CompletableFuture<Void> getPaperLibChunk(World world, int x, int z, boolean gen)
+	private CompletableFuture<Void> loadChunkWithTicket(World world, int x, int z, boolean gen)
 	{
-		return PaperLib.getChunkAtAsync(world, x, z, gen).thenAccept( (Chunk chunk) ->
+		return world.getChunkAtAsync(x, z, gen).thenCompose((Chunk chunk) ->
+		{
+			CompletableFuture<Void> ticketAdded = new CompletableFuture<>();
+			if (chunk == null)
 			{
-				if (chunk != null)
-				{
-					// toggle "force loaded" flag on for chunk to prevent it from being unloaded while we need it
-					world.setChunkForceLoaded(x, z, true);
+				ticketAdded.completeExceptionally(new IllegalStateException("Chunk load returned null at " + x + ", " + z));
+				return ticketAdded;
+			}
 
-					// alternatively for 1.14.4+
-					//world.addPluginChunkTicket(x, z, pluginInstance);
+			Runnable addTicket = () ->
+			{
+				try
+				{
+					if (!valid())
+						throw new IllegalStateException("Fill task stopped before chunk load completed");
+					world.addPluginChunkTicket(x, z, WorldBorder.plugin);
+					ticketAdded.complete(null);
 				}
-			});
+				catch (RuntimeException ex)
+				{
+					ticketAdded.completeExceptionally(ex);
+				}
+			};
+			if (Bukkit.isPrimaryThread())
+				addTicket.run();
+			else
+			{
+				try
+				{
+					Bukkit.getScheduler().runTask(WorldBorder.plugin, addTicket);
+				}
+				catch (RuntimeException ex)
+				{
+					ticketAdded.completeExceptionally(ex);
+				}
+			}
+			return ticketAdded;
+		});
 	}
 }

@@ -2,10 +2,12 @@ name: "${name}"
 authors: ["Brettflan", "Puremin0rez"]
 description: Efficient, feature-rich plugin for limiting and generating your worlds.
 version: "${version}"
-api-version: "1.13"
+api-version: "26.3"
 main: "${group}.${name}"
+website: "https://github.com/Puremin0rez/WorldBorder"
 softdepend:
   - dynmap
+  - BlueMap
   - Multiverse-Core
   - Hyperverse
 commands:
