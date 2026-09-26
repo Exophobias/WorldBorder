@@ -1,39 +1,39 @@
 name: Build WorldBorder
-on: [ push, pull_request ]
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   build:
-    # Only run on PRs if the source branch is on someone else's repo
+    # Only run on PRs if the source branch is on someone else's repo.
     if: ${{ github.event_name != 'pull_request' || github.repository != github.event.pull_request.head.repo.full_name }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
-      - name: Setup Java
-        uses: actions/setup-java@v2
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
         with:
-          distribution: 'temurin'
-          java-version: '8'
+          distribution: temurin
+          java-version: '25'
 
-      - name: Validate Gradle Wrapper
-        uses: gradle/wrapper-validation-action@v1
-
-      - name: Restore Gradle Cache
-        uses: actions/cache@v2
+      - name: Set up Gradle and validate wrapper
+        uses: gradle/actions/setup-gradle@v6
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+          cache-provider: basic
 
-      - name: Build with Gradle
-        run: ./gradlew clean build
+      - name: Build and test
+        run: ./gradlew clean build --no-daemon
 
-      - name: Upload Artifact(s)
-        uses: actions/upload-artifact@v2
+      - name: Upload plugin jar
+        uses: actions/upload-artifact@v7
         with:
-          name: WorldBorder Archive
+          name: WorldBorder-Paper-26.3
           path: build/libs/WorldBorder.jar
+          if-no-files-found: error
