@@ -24,6 +24,7 @@ public class WorldBorder extends JavaPlugin
 
 		// our one real command, though it does also have aliases "wb" and "worldborder"
 		getCommand("wborder").setExecutor(wbCommand);
+        getCommand("wborder").setTabCompleter(wbCommand);
 
 		// keep an eye on teleports, to redirect them to a spot inside the border if necessary
 		getServer().getPluginManager().registerEvents(new WBListener(), this);

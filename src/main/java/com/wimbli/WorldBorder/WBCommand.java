@@ -11,12 +11,13 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import org.bukkit.command.*;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
 import com.wimbli.WorldBorder.cmd.*;
 
 
-public class WBCommand implements CommandExecutor
+public class WBCommand implements CommandExecutor, TabCompleter
 {
 	// map of all sub-commands with the command name (string) for quick reference
 	public Map<String, WBCmd> subCommands = new LinkedHashMap<String, WBCmd>();
@@ -75,6 +76,10 @@ public class WBCommand implements CommandExecutor
     public boolean onCommand(CommandSender sender, Command command, String label, String[] split)
 	{
 		Player player = (sender instanceof Player) ? (Player)sender : null;
+        if (split.length == 0 || split[0].equalsIgnoreCase("help") || split[0].equalsIgnoreCase("commands")) {
+            showHelp(sender, split.length == 0 ? new String[0] : Arrays.copyOfRange(split, 1, split.length));
+            return true;
+        }
 
 		// if world name is passed inside quotation marks, handle that, and get List<String> instead of String[]
 		List<String> params = concatenateQuotedWorldName(split);
@@ -108,15 +113,17 @@ public class WBCommand implements CommandExecutor
 			{
 				sender.sendMessage(WBCmd.C_ERR + "Command not recognized. Showing command list.");
 			}
-			cmdName = "commands";
-			params.add(0, Integer.toString(page));
+            showHelp(sender, new String[]{Integer.toString(page)});
+            return true;
 		}
 
 		WBCmd subCommand = subCommands.get(cmdName);
 
 		// check permission
-		if (!Config.HasPermission(player, subCommand.permission))
-			return true;
+        if (!permitted(sender, subCommand)) {
+            sender.sendMessage(ChatColor.RED + "You do not have permission to do that.");
+            return true;
+        }
 
 		// if command requires world name when run by console, make sure that's in place
 		if (player == null && subCommand.hasWorldNameInput && subCommand.consoleRequiresWorldName && worldName == null)
@@ -210,4 +217,92 @@ public class WBCommand implements CommandExecutor
 		commands.remove("commands");
 		return commands;
 	}
+    private boolean permitted(CommandSender sender, WBCmd command) {
+        return command.permission == null || sender.hasPermission("worldborder." + command.permission);
+    }
+
+    private boolean staff(WBCmd command) {
+        return !command.name.equals("list") && !command.name.equals("getmsg");
+    }
+
+    private List<WBCmd> visible(CommandSender sender, boolean staffSection) {
+        List<WBCmd> result = new ArrayList<>();
+        for (WBCmd command : subCommands.values())
+            if (!command.name.equals("help") && !command.name.equals("commands")
+                    && staff(command) == staffSection && permitted(sender, command)) result.add(command);
+        result.sort(java.util.Comparator.comparing(command -> command.name.equals("debug")));
+        return result;
+    }
+
+    public void showHelp(CommandSender sender, String[] args) {
+        List<String> ordinary = examples(sender, visible(sender, false));
+        List<String> staff = examples(sender, visible(sender, true));
+        boolean direct = args.length > 0 && args[0].equalsIgnoreCase("staff");
+        if (direct && staff.isEmpty() || ordinary.isEmpty() && staff.isEmpty()) {
+            sender.sendMessage(ChatColor.RED + "You do not have permission to do that.");
+            return;
+        }
+        if (args.length > 0 && !direct) {
+            WBCmd requested = subCommands.get(args[0].toLowerCase(java.util.Locale.ROOT));
+            if (requested != null && !requested.name.equals("help") && !requested.name.equals("commands")) {
+                if (!permitted(sender, requested)) {
+                    sender.sendMessage(ChatColor.RED + "You do not have permission to do that.");
+                    return;
+                }
+                sender.sendMessage(ChatColor.DARK_GRAY + "---------- " + ChatColor.GREEN + "WorldBorder"
+                        + (staff(requested) ? " Staff" : "") + ChatColor.DARK_GRAY + " ----------");
+                for (String row : examples(sender, List.of(requested))) sender.sendMessage(row);
+                sender.sendMessage(ChatColor.DARK_GRAY + "----------------------------------------");
+                return;
+            }
+        }
+        int ordinaryPages = (ordinary.size() + 7) / 8;
+        int total = ordinaryPages + (staff.size() + 7) / 8;
+        int requested = 1;
+        try { requested = Integer.parseInt(args[direct ? 1 : 0]); }
+        catch (NumberFormatException | ArrayIndexOutOfBoundsException ignored) { }
+        int page = direct ? ordinaryPages + Math.max(1, Math.min((staff.size() + 7) / 8, requested))
+                : Math.max(1, Math.min(total, requested));
+        boolean staffPage = page > ordinaryPages;
+        List<String> rows = staffPage ? staff : ordinary;
+        int first = ((staffPage ? page - ordinaryPages : page) - 1) * 8;
+        sender.sendMessage(ChatColor.DARK_GRAY + "---------- " + ChatColor.GREEN + "WorldBorder"
+                + (staffPage ? " Staff" : "") + (total > 1 ? ChatColor.DARK_GRAY + " ("
+                + ChatColor.WHITE + page + "/" + total + ChatColor.DARK_GRAY + ")" : "")
+                + ChatColor.DARK_GRAY + " ----------");
+        for (int i = first; i < Math.min(rows.size(), first + 8); i++) sender.sendMessage(rows.get(i));
+        sender.sendMessage(ChatColor.DARK_GRAY + (page < total
+                ? "---------- /wb help " + (page + 1) + " for more ----------"
+                : "----------------------------------------"));
+    }
+
+    private List<String> examples(CommandSender sender, List<WBCmd> commands) {
+        List<String> result = new ArrayList<>();
+        for (WBCmd command : commands) {
+            for (String example : sender instanceof Player ? command.cmdExamplePlayer : command.cmdExampleConsole) {
+                String raw = ChatColor.stripColor(example).replaceAll(" +", " ").trim();
+                if (!raw.startsWith("/")) raw = "/" + raw;
+                String[] parts = raw.split(" - ", 2);
+                result.add(ChatColor.GREEN + parts[0] + ChatColor.DARK_GRAY + " - "
+                        + ChatColor.GRAY + (parts.length > 1 ? parts[1] : "show command usage"));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        List<String> options = new ArrayList<>();
+        if (args.length == 1) {
+            options.add("help");
+            for (WBCmd candidate : subCommands.values())
+                if (!candidate.name.equals("help") && !candidate.name.equals("commands") && permitted(sender, candidate)) options.add(candidate.name);
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("help")) {
+            if (!visible(sender, true).isEmpty()) options.add("staff");
+            if (!visible(sender, false).isEmpty() || !visible(sender, true).isEmpty()) options.add("1");
+        }
+        String prefix = args.length == 0 ? "" : args[args.length - 1].toLowerCase(java.util.Locale.ROOT);
+        return options.stream().filter(option -> option.startsWith(prefix)).toList();
+    }
+
 }

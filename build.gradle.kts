@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.wimbli.WorldBorder"
-version = "1.19-patriam.1"
+version = "1.19-patriam.2"
 val paperApiVersion = "26.3.build.26-alpha"
 
 java {
