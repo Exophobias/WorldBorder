@@ -89,6 +89,11 @@ public class WBCommand implements CommandExecutor, TabCompleter
 		if (wasWorldQuotation || (params.size() > 1 && !subCommands.containsKey(params.get(0)) && subCommandsWithWorldNames.contains(params.get(1))))
 			worldName = params.get(0);
 
+        if (worldName != null && params.size() < 2) {
+            showHelp(sender, new String[0]);
+            return true;
+        }
+
 		// no command specified? show command examples / help
 		if (params.isEmpty())
 			params.add(0, "commands");
@@ -100,6 +105,12 @@ public class WBCommand implements CommandExecutor, TabCompleter
 		params.remove(0);
 		if (worldName != null)
 			params.remove(0);
+
+        // A quoted world prefix must use the same permission-filtered documentation route.
+        if (cmdName.equals("help") || cmdName.equals("commands")) {
+            showHelp(sender, params.toArray(new String[0]));
+            return true;
+        }
 
 		// make sure command is recognized, default to showing command examples / help if not; also check for specified page number
 		if (!subCommands.containsKey(cmdName))
@@ -280,7 +291,9 @@ public class WBCommand implements CommandExecutor, TabCompleter
     private List<String> examples(CommandSender sender, List<WBCmd> commands) {
         List<String> result = new ArrayList<>();
         for (WBCmd command : commands) {
-            for (String example : sender instanceof Player ? command.cmdExamplePlayer : command.cmdExampleConsole) {
+            Set<String> forms = new LinkedHashSet<>(command.cmdExamplePlayer);
+            if (!(sender instanceof Player)) forms.addAll(command.cmdExampleConsole);
+            for (String example : forms) {
                 String raw = ChatColor.stripColor(example).replaceAll(" +", " ").trim();
                 if (!raw.startsWith("/")) raw = "/" + raw;
                 String[] parts = raw.split(" - ", 2);
@@ -288,7 +301,7 @@ public class WBCommand implements CommandExecutor, TabCompleter
                         + ChatColor.GRAY + (parts.length > 1 ? parts[1] : "show command usage"));
             }
         }
-        return result;
+        return new ArrayList<>(new LinkedHashSet<>(result));
     }
 
     @Override

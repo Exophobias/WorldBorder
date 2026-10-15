@@ -71,4 +71,26 @@ class CommandHelpTest {
         assertEquals(4, messages.size()); assertTrue(messages.get(0).contains("not recognized"));
         assertTrue(messages.get(1).contains("WorldBorder"));
     }
+    @Test void quotedWorldHelpAndLegacyCommandsCannotExposeForbiddenTopics() {
+        WBCommand command = new WBCommand(); List<String> messages = new ArrayList<>();
+        CommandSender sender = sender(Set.of("worldborder.help", "worldborder.list"), messages, true);
+        command.onCommand(sender, null, "wb", new String[]{"\"world\"", "help", "trim"});
+        assertEquals(List.of("You do not have permission to do that."), messages);
+        messages.clear();
+        command.onCommand(sender, null, "wb", new String[]{"\"world\"", "commands", "0"});
+        assertEquals(3, messages.size()); assertTrue(messages.get(1).startsWith("/wb list"));
+        assertFalse(String.join("\n", messages).contains("trim"));
+        messages.clear();
+        command.onCommand(sender, null, "wb", new String[]{"\"world\""});
+        assertEquals(3, messages.size());
+    }
+    @Test void consoleCanReadPlayerCenteredSetFormWithoutGrantingExecutionContext() {
+        WBCommand command = new WBCommand(); List<String> messages = new ArrayList<>();
+        CommandSender sender = sender(Set.of("worldborder.set"), messages, false);
+        command.onCommand(sender, null, "wb", new String[]{"help", "set"});
+        assertTrue(messages.stream().anyMatch(text -> text.contains("/wb set <radiusX> [radiusZ]")));
+        assertTrue(messages.stream().anyMatch(text -> text.contains("<world>")));
+        assertTrue(messages.size() <= 10);
+    }
+
 }
