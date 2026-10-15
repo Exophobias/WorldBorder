@@ -271,9 +271,10 @@ public class WBCommand implements CommandExecutor, TabCompleter
                 + ChatColor.WHITE + page + "/" + total + ChatColor.DARK_GRAY + ")" : "")
                 + ChatColor.DARK_GRAY + " ----------");
         for (int i = first; i < Math.min(rows.size(), first + 8); i++) sender.sendMessage(rows.get(i));
-        sender.sendMessage(ChatColor.DARK_GRAY + (page < total
-                ? "---------- /wb help " + (page + 1) + " for more ----------"
-                : "----------------------------------------"));
+        sender.sendMessage(page < total
+                ? ChatColor.DARK_GRAY + "---------- " + ChatColor.GREEN + "/wb help " + (page + 1)
+                    + ChatColor.GRAY + " for more " + ChatColor.DARK_GRAY + "----------"
+                : ChatColor.DARK_GRAY + "----------------------------------------");
     }
 
     private List<String> examples(CommandSender sender, List<WBCmd> commands) {
